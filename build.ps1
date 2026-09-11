@@ -8,6 +8,7 @@ New-Item -ItemType Directory -Force $outputDir, (Join-Path $outputDir 'tests') |
 $compileArgs = @('/noconfig','/nostdlib+','/nologo','/target:winexe','/platform:x64','/optimize+','/codepage:65001','/nowarn:1701')
 $compileArgs += '/out:' + (Join-Path $outputDir 'ScreenWatch.exe')
 $compileArgs += '/win32manifest:' + (Join-Path $sourceDir 'app.manifest')
+$compileArgs += '/resource:' + (Join-Path $PSScriptRoot 'assets\alarm.wav') + ',ScreenWatch.alarm.wav'
 foreach ($reference in @('mscorlib','System','System.Core','System.Drawing','System.Windows.Forms','System.Xml','System.Security','System.Net.Http','System.Web.Extensions','Facades\System.Runtime','Facades\System.Threading.Tasks','Facades\System.Runtime.InteropServices.WindowsRuntime')) {
     $compileArgs += '/r:' + (Join-Path $framework ($reference + '.dll'))
 }

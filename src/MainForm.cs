@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Media;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -28,7 +29,7 @@ namespace ScreenWatch
         CancellationTokenSource monitoring = new CancellationTokenSource();
         readonly SemaphoreSlim sends = new SemaphoreSlim(1,1);
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 200 };
-        readonly SoundPlayer sound = new SoundPlayer(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"alarm.wav"));
+        readonly SoundPlayer sound = CreateSoundPlayer();
         DataGridView grid;
         TextBox log;
         Label status, barkStatus;
@@ -36,6 +37,11 @@ namespace ScreenWatch
         OcrReader ocr;
         bool running, busy, closed;
         int generation;
+        static SoundPlayer CreateSoundPlayer()
+        {
+            var embedded = Assembly.GetExecutingAssembly().GetManifestResourceStream("ScreenWatch.alarm.wav");
+            return embedded == null ? new SoundPlayer(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"alarm.wav")) : new SoundPlayer(embedded);
+        }
         public MainForm(AppConfig loaded)
         {
             config = loaded;
