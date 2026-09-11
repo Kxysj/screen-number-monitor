@@ -1,0 +1,14 @@
+# Local configuration contains an encrypted Bark key and private monitoring regions.
+settings.xml*
+**/settings.xml*
+*.tmp
+*.log
+dist/
+work/
+test-output/
+*.zip
+*.exe
+*.pdb
+__pycache__/
+.vs/
+.idea/

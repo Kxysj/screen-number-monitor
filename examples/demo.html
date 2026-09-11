@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>屏幕数值监控 · 演示</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f7fa;color:#1b283b;font-family:"Microsoft YaHei UI",sans-serif;padding:38px}main{max-width:1000px;margin:auto}h1{margin:0 0 10px;font-size:28px}p{color:#657588;line-height:1.7}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-top:28px}.card{background:white;border:1px solid #dbe4eb;border-radius:12px;padding:24px}h2{font-size:18px;margin:0 0 22px}.number{font-family:Arial,sans-serif;font-size:54px;font-weight:500;background:white;color:#111;padding:14px 6px;display:inline-block;min-width:185px;text-align:center}.dark .number{background:#121b29;color:#fff}input{width:100%;margin-top:22px;padding:10px;border:1px solid #bdcbd6;border-radius:5px;font-size:17px}button{padding:12px 20px;background:#007e70;color:white;border:0;border-radius:7px;font:inherit;cursor:pointer}small{display:block;line-height:1.7;color:#718193;margin-top:16px}.footer{margin-top:24px;display:flex;align-items:center;gap:20px}
+</style><main><h1>数值监控演示</h1><p>在监控程序中点击“新建监控”，只框住下方的大数字。修改输入值，观察识别结果与报警。</p>
+<div class="cards">
+<section class="card"><h2>温度</h2><div class="number" id="v0">72.50</div><input aria-label="温度值" type="number" step="0.5" value="72.5" oninput="update(0,this.value)"><small>可设置：大于 80 报警<br>手动输入 85，等待连续命中。</small></section>
+<section class="card"><h2>压力</h2><div class="number" id="v1">15.00</div><input aria-label="压力值" type="number" step="0.5" value="15" oninput="update(1,this.value)"><small>可设置：超出 [10, 20] 报警<br>手动输入 8 或 25。</small></section>
+<section class="card dark"><h2>负数 / 深色背景</h2><div class="number" id="v2">-12.50</div><input aria-label="负数值" type="number" step="0.5" value="-12.5" oninput="update(2,this.value)"><small>可设置：小于 -15 报警<br>框选后勾选“反色增强”。</small></section>
+</div><div class="footer"><button id="toggle" onclick="toggle()">开启自动变化</button><span id="state">当前为手动模式</span></div><p>请保持此页面及被监控数字可见，不要让监控程序覆盖选区。此页面不联网、不发送通知。</p></main>
+<script>
+let timer=null,step=0;function update(i,value){document.getElementById('v'+i).textContent=value!==''&&Number.isFinite(Number(value))?Number(value).toFixed(2):'—'}
+function toggle(){if(timer){clearInterval(timer);timer=null}else{timer=setInterval(()=>{step++;const values=step%2?[85,8,-18]:[72.5,15,-12.5];document.querySelectorAll('input').forEach((el,i)=>{el.value=values[i];update(i,values[i])})},8000)}document.getElementById('toggle').textContent=timer?'停止自动变化':'开启自动变化';document.getElementById('state').textContent=timer?'每 8 秒切换正常 / 异常数值':'当前为手动模式'}
+</script></html>
