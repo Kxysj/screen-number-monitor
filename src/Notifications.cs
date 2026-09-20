@@ -1,14 +1,45 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Windows.Forms;
 
 namespace ScreenWatch
 {
+    // Created on the UI thread only when first used. Windows controls display and sound.
+    public sealed class SystemNotificationClient : IDisposable
+    {
+        readonly Action activate;
+        NotifyIcon icon;
+        public SystemNotificationClient(Action activateWindow) { activate = activateWindow; }
+        public void Show(string title, string body)
+        {
+            if (icon == null)
+            {
+                icon = new NotifyIcon { Icon = SystemIcons.Warning, Text = "屏幕数值监控" };
+                icon.BalloonTipClicked += delegate { activate(); };
+                icon.DoubleClick += delegate { activate(); };
+            }
+            icon.Visible = true;
+            // Shell notification fields include a terminating null character.
+            icon.ShowBalloonTip(8000,Limit(title,63),Limit(body,255),ToolTipIcon.Warning);
+        }
+        internal static string Limit(string text,int length)
+        {
+            text = (text ?? "").Replace('\0',' ');
+            if (text.Length <= length) return text;
+            int count = length - 1;
+            if (count > 0 && char.IsHighSurrogate(text[count - 1])) count--;
+            return text.Substring(0,count) + "…";
+        }
+        public void Dispose() { if (icon != null) { icon.Visible = false; icon.Dispose(); icon = null; } }
+    }
+
     public sealed class BarkClient : IDisposable
     {
         readonly HttpClient client;

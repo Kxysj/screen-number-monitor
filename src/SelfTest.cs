@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Windows.Forms;
 
 namespace ScreenWatch
 {
@@ -16,6 +17,12 @@ namespace ScreenWatch
     {
         static readonly List<string> results = new List<string>();
         static void Check(bool condition,string name) { if(!condition) throw new Exception("FAIL: " + name); results.Add("PASS: " + name); }
+        static Control FindControl(Control parent,string text)
+        {
+            if(parent.Text == text) return parent;
+            foreach(Control child in parent.Controls) { var found = FindControl(child,text); if(found != null) return found; }
+            return null;
+        }
         sealed class MockHandler : HttpMessageHandler
         {
             public string Body = "{\"code\":200}", RequestJson, RequestUrl;
@@ -72,9 +79,18 @@ namespace ScreenWatch
                     Settings.FilePath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output)),"test-settings.xml");
                     var data = new AppConfig(); data.Monitors.Add(c); data.BarkProtected = Settings.Encrypt("test-only"); Settings.Save(data); Settings.Save(data);
                     var loaded = Settings.Load(); Check(loaded.Monitors.Count == 1 && loaded.Monitors[0].Upper == 20 && Settings.Decrypt(loaded.BarkProtected) == "test-only","atomic settings roundtrip / backup");
+                    c.Sound = false; c.Bark = false; c.SystemNotification = true; Settings.Save(data);
+                    loaded = Settings.Load(); Check(loaded.Monitors[0].SystemNotification && !loaded.Monitors[0].Sound && !loaded.Monitors[0].Bark,"system notification only settings roundtrip");
+                    c.SystemNotification = false; Settings.Save(data);
+                    Check(!Settings.Load().Monitors[0].SystemNotification,"system notification disabled survives reload");
+                    File.WriteAllText(Settings.FilePath,File.ReadAllText(Settings.FilePath).Replace("<SystemNotification>false</SystemNotification>",""));
+                    Check(!Settings.Load().Monitors[0].SystemNotification,"legacy settings preserve existing notification choices");
                     File.Delete(Settings.FilePath); File.Delete(Settings.FilePath + ".bak");
                 }
                 finally { Settings.FilePath = previous; }
+                string longTitle = new string('名',61) + "\U0001F514" + "通知";
+                Check(SystemNotificationClient.Limit(longTitle,63) == new string('名',61) + "…","long notification title does not split emoji");
+                Check(SystemNotificationClient.Limit(new string('值',300),255).Length == 255 && SystemNotificationClient.Limit("a\0b",63) == "a b","notification text respects Windows limits");
                 var reader = new OcrReader();
                 string regression=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"tests","decimal-regression.png");
                 using(var sample=new Bitmap(regression))
@@ -129,8 +145,13 @@ namespace ScreenWatch
                             {
                                 editor.StartPosition = System.Windows.Forms.FormStartPosition.Manual; editor.Location = new Point(-30000,-30000); editor.Show(); System.Windows.Forms.Application.DoEvents();
                                 using(var editorImage = new Bitmap(editor.Width,editor.Height)) { editor.DrawToBitmap(editorImage,new Rectangle(Point.Empty,editor.Size)); editorImage.Save(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output)),"设置预览.png"),ImageFormat.Png); }
-                                editor.Close();
+                                ((CheckBox)FindControl(editor,"电脑发出报警声")).Checked = false;
+                                ((CheckBox)FindControl(editor,"Bark 推送到手机")).Checked = false;
+                                ((CheckBox)FindControl(editor,"Windows 系统通知")).Checked = true;
+                                ((Button)FindControl(editor,"保存监控")).PerformClick();
+                                Check(editor.DialogResult == DialogResult.OK && editor.Result.SystemNotification && !editor.Result.Sound && !editor.Result.Bark,"editor accepts Windows notifications as the only alarm channel");
                             }
+                            Check(FindControl(form,"测试系统通知") != null,"system notification test action available without Bark");
                             form.Close();
                         }
                     }

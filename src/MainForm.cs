@@ -30,6 +30,7 @@ namespace ScreenWatch
         readonly SemaphoreSlim sends = new SemaphoreSlim(1,1);
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 200 };
         readonly SoundPlayer sound = CreateSoundPlayer();
+        readonly SystemNotificationClient systemNotifications;
         DataGridView grid;
         TextBox log;
         Label status, barkStatus;
@@ -45,8 +46,9 @@ namespace ScreenWatch
         public MainForm(AppConfig loaded)
         {
             config = loaded;
+            systemNotifications = new SystemNotificationClient(delegate { if(closed) return; Show(); if(WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); });
             try { endpoint = Settings.Decrypt(config.BarkProtected); } catch { endpoint = ""; }
-            Text = "屏幕数值监控 1.1"; Font = new Font("Microsoft YaHei UI",10); ForeColor = Theme.Ink; BackColor = Theme.Background;
+            Text = "屏幕数值监控 1.2"; Font = new Font("Microsoft YaHei UI",10); ForeColor = Theme.Ink; BackColor = Theme.Background;
             Size = new Size(1220,790); MinimumSize = new Size(1000,650); StartPosition = FormStartPosition.CenterScreen; AutoScaleMode = AutoScaleMode.Dpi;
             var top = new Panel { Dock = DockStyle.Top, Height = 148, Padding = new Padding(24) };
             var title = new Label { Text = "屏幕数值监控", Font = new Font("Microsoft YaHei UI",22,FontStyle.Bold), Left = 24, Top = 18, AutoSize = true };
@@ -60,6 +62,7 @@ namespace ScreenWatch
             actions.Controls.Add(Theme.Button("Bark 设置",delegate { ConfigureBark(); }));
             actions.Controls.Add(Theme.Button("测试声音",delegate { PlaySound(); }));
             actions.Controls.Add(Theme.Button("测试推送",async delegate { await TestPush(); }));
+            actions.Controls.Add(Theme.Button("测试系统通知",delegate { ShowSystemNotification("屏幕数值监控 · 测试","Windows 系统通知测试。\n时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),"测试"); }));
             actions.SizeChanged += delegate { int height = Math.Max(40,actions.GetPreferredSize(new Size(actions.Width,0)).Height); if(actions.Height != height) actions.Height = height; top.Height = actions.Top + height + 4; };
             top.Controls.AddRange(new Control[] {title,status,actions});
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 205, Padding = new Padding(24,0,24,16) };
@@ -79,6 +82,11 @@ namespace ScreenWatch
             FormClosing += delegate { closed = true; running = false; generation++; timer.Stop(); lifetime.Cancel(); monitoring.Cancel(); sound.Stop(); };
             FormClosed += delegate { timer.Dispose(); sound.Dispose(); };
             Log("就绪。检测在本机完成；仅报警内容通过 Bark 发送。启动后默认暂停。");
+        }
+        protected override void Dispose(bool disposing)
+        {
+            if(disposing && systemNotifications != null) systemNotifications.Dispose();
+            base.Dispose(disposing);
         }
         void AddColumn(string title, float weight) { grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = title, FillWeight = weight, SortMode = DataGridViewColumnSortMode.NotSortable }); }
         void UpdateBarkStatus() { barkStatus.Text = "事件记录     ·     Bark " + (endpoint.Length == 0 ? "未配置 / 当前账户无法解密，请重新填写" : "已配置（地址已加密）") + "     ·     目标数字需保持可见，锁屏时请暂停"; }
@@ -145,6 +153,11 @@ namespace ScreenWatch
             Stop(); using(var dialog = new BarkDialog(endpoint)) if(dialog.ShowDialog(this) == DialogResult.OK) { endpoint = dialog.Endpoint; config.BarkProtected = endpoint.Length == 0 ? "" : Settings.Encrypt(endpoint); Save(); UpdateBarkStatus(); }
         }
         void PlaySound() { try { sound.Play(); } catch { SystemSounds.Exclamation.Play(); Log("自定义声音不可用，已使用系统提示音。"); } }
+        void ShowSystemNotification(string title,string body,string name)
+        {
+            try { systemNotifications.Show(title,body); Log(name + "：已请求 Windows 显示系统通知；实际显示受系统通知设置和勿扰模式影响。"); }
+            catch(Exception ex) { Log(name + "：系统通知失败（" + ex.Message + "）。"); }
+        }
         async Task TestPush()
         {
             if(endpoint.Length == 0) { ConfigureBark(); if(endpoint.Length == 0) return; }
@@ -186,6 +199,7 @@ namespace ScreenWatch
                         {
                             Log(c.Name + "：当前值 " + value + "，触发条件 " + c.RuleText);
                             if(c.Sound) PlaySound();
+                            if(c.SystemNotification) ShowSystemNotification("数值报警 · " + c.Name,"监控：" + c.Name + "\n当前值：" + value + "\n条件：" + c.RuleText + "\n时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),c.Name);
                             if(c.Bark && !m.PushPending) SendInBackground(endpoint,m,value,monitoring.Token);
                         }
                     }

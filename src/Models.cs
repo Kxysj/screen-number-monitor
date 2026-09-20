@@ -26,6 +26,7 @@ namespace ScreenWatch
         public decimal Lower = 0, Upper = 100;
         public int IntervalSeconds = 2, ConfirmCount = 2, CooldownSeconds = 60;
         public bool Sound = true, Bark = true, Repeat = false, Enabled = true, Invert = false;
+        public bool SystemNotification = false;
         public int NumberIndex = 0, DecimalMode = 0;
         public Rectangle Region { get { return new Rectangle(X, Y, Width, Height); } }
         public MonitorConfig Copy() { return (MonitorConfig)MemberwiseClone(); }

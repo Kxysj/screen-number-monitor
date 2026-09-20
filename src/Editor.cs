@@ -22,7 +22,7 @@ namespace ScreenWatch
         TextBox name;
         ComboBox rule, format;
         NumericUpDown lower, upper, interval, confirm, cooldown, index;
-        CheckBox sound, bark, repeat, invert, follow;
+        CheckBox sound, bark, systemNotification, repeat, invert, follow;
         Label region, preview;
         PictureBox picture;
         public Editor(MainForm owner, MonitorConfig c)
@@ -59,7 +59,8 @@ namespace ScreenWatch
             format = Combo(new[] { "小数点 . / 千位分隔 ,（如 1,234.56）", "小数逗号 , / 千位分隔 .（如 1.234,56）" },c.DecimalMode); AddRow(table,"数字格式",format);
             invert = Check("深色背景、浅色数字（反色增强）",c.Invert); AddRow(table,"识别增强",invert);
             sound = Check("电脑发出报警声",c.Sound); bark = Check("Bark 推送到手机",c.Bark);
-            var channels = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill }; channels.Controls.Add(sound); channels.Controls.Add(bark); AddRow(table,"报警方式",channels);
+            systemNotification = Check("Windows 系统通知",c.SystemNotification);
+            var channels = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false }; channels.Controls.Add(sound); channels.Controls.Add(systemNotification); channels.Controls.Add(bark); AddRow(table,"报警方式",channels);
             repeat = Check("持续异常时，按冷却时间重复报警",c.Repeat); AddRow(table,"重复提醒",repeat);
             AddRow(table,"提醒说明",Theme.Label("未勾选时每轮异常提醒一次，恢复正常后重新布防。"));
             scroll.Controls.Add(table); Controls.Add(scroll); Controls.Add(footer);
@@ -77,6 +78,7 @@ namespace ScreenWatch
             Result.IntervalSeconds = (int)interval.Value; Result.ConfirmCount = (int)confirm.Value; Result.CooldownSeconds = (int)cooldown.Value;
             Result.NumberIndex = (int)index.Value; Result.DecimalMode = format.SelectedIndex; Result.Invert = invert.Checked;
             Result.Sound = sound.Checked; Result.Bark = bark.Checked; Result.Repeat = repeat.Checked; Result.FollowWindow = follow.Checked;
+            Result.SystemNotification = systemNotification.Checked;
         }
         async Task SelectRegion()
         {
@@ -119,7 +121,7 @@ namespace ScreenWatch
             if (Result.Width < 8 || Result.Height < 8) { MessageBox.Show(this,"请先框选监控区域。"); return; }
             if (Result.Rule >= 2 && Result.Lower >= Result.Upper) { MessageBox.Show(this,"区间下限必须小于上限。"); return; }
             if (Result.FollowWindow && Result.WindowHandle == 0) { MessageBox.Show(this,"请重新框选，绑定要跟随的窗口。"); return; }
-            if (!Result.Sound && !Result.Bark) { MessageBox.Show(this,"至少选择一种报警方式。"); return; }
+            if (!Result.Sound && !Result.Bark && !Result.SystemNotification) { MessageBox.Show(this,"至少选择一种报警方式。"); return; }
             DialogResult = DialogResult.OK; Close();
         }
     }
