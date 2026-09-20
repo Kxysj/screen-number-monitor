@@ -170,7 +170,12 @@ namespace ScreenWatch
             }
             return string.IsNullOrWhiteSpace(enhanced)?original:enhanced;
         }
-        async Task<string> RecognizePass(Bitmap source, bool invert, bool binary, double requestedScale=3.0)
+        public Task<string> ReadText(Bitmap source,bool invert)
+        {
+            // Text rules retain letters, punctuation and line content; numeric repairs do not apply.
+            return RecognizePass(source,invert,false,3.0,false);
+        }
+        async Task<string> RecognizePass(Bitmap source, bool invert, bool binary, double requestedScale=3.0, bool numeric=true)
         {
             double scale = Math.Min(requestedScale, (OcrEngine.MaxImageDimension - 24.0) / Math.Max(source.Width, source.Height));
             int w = Math.Max(1, (int)(source.Width * scale)), h = Math.Max(1, (int)(source.Height * scale));
@@ -193,6 +198,7 @@ namespace ScreenWatch
                     {
                         var result = await Complete<OcrResult>(engine.RecognizeAsync(bitmap));
                         string text = string.Join("\n", result.Lines.Select(line => line.Text));
+                        if (!numeric) return text;
                         if (result.Lines.Count == 1 && HasLeadingMinus(prepared))
                         {
                             text = text.TrimStart();

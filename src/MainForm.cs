@@ -30,6 +30,8 @@ namespace ScreenWatch
         readonly SemaphoreSlim sends = new SemaphoreSlim(1,1);
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 200 };
         readonly SoundPlayer sound = CreateSoundPlayer();
+        readonly System.Diagnostics.Stopwatch alarmClock = System.Diagnostics.Stopwatch.StartNew();
+        readonly DateTime alarmEpoch = DateTime.UtcNow;
         readonly SystemNotificationClient systemNotifications;
         DataGridView grid;
         TextBox log;
@@ -48,7 +50,7 @@ namespace ScreenWatch
             config = loaded;
             systemNotifications = new SystemNotificationClient(delegate { if(closed) return; Show(); if(WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); });
             try { endpoint = Settings.Decrypt(config.BarkProtected); } catch { endpoint = ""; }
-            Text = "屏幕数值监控 1.2"; Font = new Font("Microsoft YaHei UI",10); ForeColor = Theme.Ink; BackColor = Theme.Background;
+            Text = "屏幕数值监控 1.3.0"; Font = new Font("Microsoft YaHei UI",10); ForeColor = Theme.Ink; BackColor = Theme.Background;
             Size = new Size(1220,790); MinimumSize = new Size(1000,650); StartPosition = FormStartPosition.CenterScreen; AutoScaleMode = AutoScaleMode.Dpi;
             var top = new Panel { Dock = DockStyle.Top, Height = 148, Padding = new Padding(24) };
             var title = new Label { Text = "屏幕数值监控", Font = new Font("Microsoft YaHei UI",22,FontStyle.Bold), Left = 24, Top = 18, AutoSize = true };
@@ -72,9 +74,10 @@ namespace ScreenWatch
             var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24,16,24,16) };
             grid = new DataGridView { Dock = DockStyle.Fill, BackgroundColor = Color.White, BorderStyle = BorderStyle.None, AutoGenerateColumns = false, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false, ReadOnly = true, MultiSelect = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, EnableHeadersVisualStyles = false, CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Color.FromArgb(232,238,243) };
             grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(228,235,242), ForeColor = Theme.Ink, Font = new Font(Font,FontStyle.Bold), Padding = new Padding(6) };
+            grid.Name = "Monitors";
             grid.DefaultCellStyle = new DataGridViewCellStyle { Padding = new Padding(6), SelectionBackColor = Color.FromArgb(218,242,237), SelectionForeColor = Theme.Ink };
             grid.ColumnHeadersHeight = 44; grid.RowTemplate.Height = 58;
-            AddColumn("监控名称",16); AddColumn("当前数值",12); AddColumn("报警条件",16); AddColumn("状态",23); AddColumn("检测时间",11); AddColumn("区域 / 模式",22);
+            AddColumn("监控名称",16); AddColumn("当前内容",14); AddColumn("报警条件",18); AddColumn("状态",23); AddColumn("检测时间",11); AddColumn("区域 / 模式",18);
             grid.CellDoubleClick += delegate(object s,DataGridViewCellEventArgs e) { if (e.RowIndex >= 0) Edit(); };
             body.Controls.Add(grid); Controls.Add(body); Controls.Add(bottom); Controls.Add(top);
             ReloadRows();
@@ -111,7 +114,7 @@ namespace ScreenWatch
         {
             running = false; generation++; sound.Stop(); start.Text = "开始全部"; status.Text = "已暂停  ·  可新建或编辑监控";
             monitoring.Cancel();
-            foreach (var m in monitors) { m.Alarm.Hits = 0; m.Row.Cells[3].Value = m.Config.Enabled ? "已暂停" : "已停用"; m.Row.DefaultCellStyle.ForeColor = Theme.Ink; }
+            foreach (var m in monitors) { m.Alarm.Invalid(); m.Row.Cells[3].Value = m.Config.Enabled ? "已暂停" : "已停用"; m.Row.DefaultCellStyle.ForeColor = Theme.Ink; }
         }
         void Start()
         {
@@ -120,7 +123,7 @@ namespace ScreenWatch
             try { if (ocr == null) ocr = new OcrReader(); } catch(Exception ex) { MessageBox.Show(this,ex.Message,"无法开始 OCR"); return; }
             generation++; running = true;
             monitoring.Dispose(); monitoring = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-            foreach (var m in monitors) { m.Due = DateTime.MinValue; m.Alarm.Hits = 0; }
+            foreach (var m in monitors) { m.Due = DateTime.MinValue; m.Alarm.Invalid(); }
             start.Text = "暂停全部"; status.Text = "正在监控 " + monitors.Count(m=>m.Config.Enabled) + " 个区域  ·  保持目标数字可见"; Log("开始监控。");
         }
         async Task Add()
@@ -185,22 +188,25 @@ namespace ScreenWatch
                     try
                     {
                         string raw;
-                        using(var shot = Native.Capture(Native.Resolve(c))) raw = await ocr.Read(shot,c.Invert);
+                        using(var shot = Native.Capture(Native.Resolve(c))) raw = Rules.IsText(c) ? await ocr.ReadText(shot,c.Invert) : await ocr.Read(shot,c.Invert);
                         if(!running || generation != token || closed) break;
-                        decimal value; string error;
+                        MonitorReading reading; string error;
                         m.Row.Cells[4].Value = DateTime.Now.ToString("HH:mm:ss");
                         m.Row.Cells[1].ToolTipText = "OCR 原文：" + raw;
-                        if(!Numbers.TryRead(raw,c.NumberIndex,c.DecimalMode,out value,out error)) { Invalid(m,error); continue; }
-                        m.Row.Cells[1].Value = value.ToString();
-                        bool alert = m.Alarm.Observe(c,value,DateTime.UtcNow), abnormal = Rules.Matches(c,value);
-                        m.Row.Cells[3].Value = abnormal ? (m.Alarm.Hits < c.ConfirmCount ? "命中 " + m.Alarm.Hits + "/" + c.ConfirmCount : "异常 · " + (m.Alarm.Active ? "已报警" : "冷却中")) : "正常";
+                        if(!MonitorReading.TryRead(c,raw,out reading,out error)) { Invalid(m,error); continue; }
+                        m.Row.Cells[1].Value = reading.Display;
+                        bool stable = Rules.IsUnchanged(c);
+                        bool alert = m.Alarm.Observe(c,reading,alarmEpoch.Add(alarmClock.Elapsed)), abnormal = stable ? m.Alarm.UnchangedExpired : Rules.Matches(c,reading.Value);
+                        m.Row.Cells[3].Value = stable ? "不变 " + Math.Floor(m.Alarm.UnchangedElapsed) + " / " + c.UnchangedSeconds + " 秒" + (abnormal ? (m.Alarm.Active ? " · 已报警" : " · 冷却中") : " · 计时中") : (abnormal ? (m.Alarm.Hits < c.ConfirmCount ? "命中 " + m.Alarm.Hits + "/" + c.ConfirmCount : "异常 · " + (m.Alarm.Active ? "已报警" : "冷却中")) : "正常");
                         m.Row.DefaultCellStyle.ForeColor = abnormal ? Color.FromArgb(189,62,43) : Theme.Accent;
                         if(alert)
                         {
-                            Log(c.Name + "：当前值 " + value + "，触发条件 " + c.RuleText);
+                            string title = (Rules.IsText(c) ? "文字报警 · " : "数值报警 · ") + c.Name;
+                            string body = "监控：" + c.Name + "\n当前内容：" + reading.Display + "\n条件：" + c.RuleText + (stable ? "\n已保持不变：" + Math.Floor(m.Alarm.UnchangedElapsed) + " 秒" : "") + "\n时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                            Log(c.Name + "：当前内容 " + reading.Display + "，触发条件 " + c.RuleText);
                             if(c.Sound) PlaySound();
-                            if(c.SystemNotification) ShowSystemNotification("数值报警 · " + c.Name,"监控：" + c.Name + "\n当前值：" + value + "\n条件：" + c.RuleText + "\n时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),c.Name);
-                            if(c.Bark && !m.PushPending) SendInBackground(endpoint,m,value,monitoring.Token);
+                            if(c.SystemNotification) ShowSystemNotification(title,body,c.Name);
+                            if(c.Bark && !m.PushPending) SendInBackground(endpoint,m,title,body,monitoring.Token);
                         }
                     }
                     catch(Exception ex) { if(running && generation == token && !closed) Invalid(m,ex.Message); }
@@ -208,10 +214,10 @@ namespace ScreenWatch
             }
             finally { busy = false; }
         }
-        async void SendInBackground(string address,MonitorRuntime monitor,decimal value,CancellationToken cancellation)
+        async void SendInBackground(string address,MonitorRuntime monitor,string title,string body,CancellationToken cancellation)
         {
             monitor.PushPending = true;
-            try { await Send(address,"数值报警 · " + monitor.Config.Name,"当前值：" + value + "\n条件：" + monitor.Config.RuleText + "\n时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),monitor.Config.Name,cancellation); }
+            try { await Send(address,title,body,monitor.Config.Name,cancellation); }
             finally { monitor.PushPending = false; }
         }
         void Invalid(MonitorRuntime m,string error)

@@ -25,6 +25,7 @@ namespace ScreenWatch
         public int Rule;
         public decimal Lower = 0, Upper = 100;
         public int IntervalSeconds = 2, ConfirmCount = 2, CooldownSeconds = 60;
+        public int UnchangedSeconds = 60;
         public bool Sound = true, Bark = true, Repeat = false, Enabled = true, Invert = false;
         public bool SystemNotification = false;
         public int NumberIndex = 0, DecimalMode = 0;
@@ -64,7 +65,9 @@ namespace ScreenWatch
     }
     public static class Rules
     {
-        public static readonly string[] Names = { "大于上限", "小于下限", "超出区间", "进入区间" };
+        public static readonly string[] Names = { "大于上限", "小于下限", "超出区间", "进入区间", "数值持续不变", "文字持续不变" };
+        public static bool IsUnchanged(MonitorConfig c) { return c.Rule == 4 || c.Rule == 5; }
+        public static bool IsText(MonitorConfig c) { return c.Rule == 5; }
         public static bool Matches(MonitorConfig c, decimal value)
         {
             switch (c.Rule) { case 0: return value > c.Upper; case 1: return value < c.Lower;
@@ -73,6 +76,7 @@ namespace ScreenWatch
         }
         public static string Describe(MonitorConfig c)
         {
+            if (IsUnchanged(c)) return (IsText(c) ? "文字" : "数值") + "不变 ≥ " + c.UnchangedSeconds + " 秒";
             if (c.Rule == 0) return "> " + c.Upper;
             if (c.Rule == 1) return "< " + c.Lower;
             return (c.Rule == 2 ? "区间外 " : "区间内 ") + "[" + c.Lower + ", " + c.Upper + "]";
@@ -83,15 +87,61 @@ namespace ScreenWatch
         public int Hits;
         public bool Active;
         public DateTime LastAlert = DateTime.MinValue;
-        public void Invalid() { Hits = 0; }
+        string lastContent;
+        DateTime unchangedSince, lastObservation;
+        public double UnchangedElapsed { get; private set; }
+        public bool UnchangedExpired { get; private set; }
+        public void Invalid()
+        {
+            Hits = 0;
+            if (lastContent != null) Active = false;
+            lastContent = null; UnchangedElapsed = 0; UnchangedExpired = false;
+        }
+        public bool Observe(MonitorConfig c,MonitorReading reading,DateTime now)
+        {
+            if (!Rules.IsUnchanged(c)) return Observe(c,reading.Value,now);
+            // A failed observation or a long interruption cannot establish continuous stability.
+            bool gap = lastContent != null && (now < lastObservation || (now-lastObservation).TotalSeconds > Math.Max(30,c.IntervalSeconds*3));
+            if (gap || !string.Equals(lastContent,reading.Identity,StringComparison.Ordinal))
+            {
+                lastContent = reading.Identity; unchangedSince = now; Active = false;
+                UnchangedElapsed = 0; UnchangedExpired = false;
+            }
+            lastObservation = now;
+            UnchangedElapsed = Math.Max(0,(now-unchangedSince).TotalSeconds);
+            UnchangedExpired = UnchangedElapsed >= Math.Max(1,c.UnchangedSeconds);
+            return UnchangedExpired && AlertIfReady(c,now);
+        }
         public bool Observe(MonitorConfig c, decimal value, DateTime now)
         {
             if (!Rules.Matches(c, value)) { Hits = 0; Active = false; return false; }
             Hits = Math.Min(Hits + 1, c.ConfirmCount);
             if (Hits < c.ConfirmCount) return false;
+            return AlertIfReady(c,now);
+        }
+        bool AlertIfReady(MonitorConfig c,DateTime now)
+        {
             if (Active && !c.Repeat) return false;
-            if ((now - LastAlert).TotalSeconds < c.CooldownSeconds) return false;
+            if (LastAlert != DateTime.MinValue && (now - LastAlert).TotalSeconds < c.CooldownSeconds) return false;
             Active = true; LastAlert = now; return true;
+        }
+    }
+    public sealed class MonitorReading
+    {
+        public string Display, Identity;
+        public decimal Value;
+        public static bool TryRead(MonitorConfig c,string raw,out MonitorReading reading,out string error)
+        {
+            reading = null; error = "";
+            if (Rules.IsText(c))
+            {
+                string text = Regex.Replace((raw ?? "").Normalize(NormalizationForm.FormC),@"\s+"," ").Trim();
+                if (text.Length == 0) { error = "未识别到文字"; return false; }
+                reading = new MonitorReading { Display = text, Identity = text }; return true;
+            }
+            decimal value;
+            if (!Numbers.TryRead(raw,c.NumberIndex,c.DecimalMode,out value,out error)) return false;
+            reading = new MonitorReading { Value = value, Display = value.ToString(), Identity = value.ToString("G29",CultureInfo.InvariantCulture) }; return true;
         }
     }
     public static class Numbers

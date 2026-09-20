@@ -61,6 +61,7 @@ namespace ScreenWatch
                 c.Repeat = true;
                 Check(!state.Observe(c,21,now.AddSeconds(160)) && state.Observe(c,21,now.AddSeconds(216)),"repeating alert cooldown");
                 state = new AlarmState(); state.Observe(c,21,now); state.Invalid(); Check(!state.Observe(c,21,now.AddSeconds(3)),"invalid reading resets confirmation");
+                UnchangedAlarmTests();
                 Check(BarkClient.Normalize("https://api.day.app/test-key/任意内容") == "https://api.day.app/test-key","Bark sample content stripped");
                 bool rejected = false; try { BarkClient.Normalize("http://api.day.app/key"); } catch { rejected = true; } Check(rejected,"HTTPS required");
                 var handler = new MockHandler();
@@ -85,6 +86,10 @@ namespace ScreenWatch
                     Check(!Settings.Load().Monitors[0].SystemNotification,"system notification disabled survives reload");
                     File.WriteAllText(Settings.FilePath,File.ReadAllText(Settings.FilePath).Replace("<SystemNotification>false</SystemNotification>",""));
                     Check(!Settings.Load().Monitors[0].SystemNotification,"legacy settings preserve existing notification choices");
+                    c.Rule = 5; c.UnchangedSeconds = 17; Settings.Save(data);
+                    loaded = Settings.Load(); Check(loaded.Monitors[0].Rule == 5 && loaded.Monitors[0].UnchangedSeconds == 17,"text unchanged duration settings roundtrip");
+                    File.WriteAllText(Settings.FilePath,File.ReadAllText(Settings.FilePath).Replace("<UnchangedSeconds>17</UnchangedSeconds>",""));
+                    Check(Settings.Load().Monitors[0].UnchangedSeconds == 60,"legacy settings default unchanged duration");
                     File.Delete(Settings.FilePath); File.Delete(Settings.FilePath + ".bak");
                 }
                 finally { Settings.FilePath = previous; }
@@ -92,6 +97,13 @@ namespace ScreenWatch
                 Check(SystemNotificationClient.Limit(longTitle,63) == new string('名',61) + "…","long notification title does not split emoji");
                 Check(SystemNotificationClient.Limit(new string('值',300),255).Length == 255 && SystemNotificationClient.Limit("a\0b",63) == "a b","notification text respects Windows limits");
                 var reader = new OcrReader();
+                foreach(string label in new[]{"READY 42","运行正常"})
+                using(var sample = new Bitmap(350,80))
+                {
+                    using(var g = Graphics.FromImage(sample)) { g.Clear(Color.White); using(var font = new Font("Microsoft YaHei UI",28)) g.DrawString(label,font,Brushes.Black,8,8); }
+                    string text = await reader.ReadText(sample,false);
+                    Check(text.Replace(" ","").Replace("\n","").Trim() == label.Replace(" ",""),"Windows text OCR preserves words: " + text);
+                }
                 string regression=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"tests","decimal-regression.png");
                 using(var sample=new Bitmap(regression))
                 {
@@ -158,25 +170,200 @@ namespace ScreenWatch
                     catch(Exception ex) { uiError = ex; }
                 });
                 thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join(); Check(uiError == null,"WinForms UI construction and preview" + (uiError == null ? "" : ": " + uiError));
+                await ModalEditorTest();
                 await LiveCaptureTest();
                 results.Add("COMPLETED · " + results.FindAll(x=>x.StartsWith("PASS:")).Count + " passed · " + results.FindAll(x=>x.StartsWith("SKIP:")).Count + " skipped");
             }
             catch(Exception ex) { results.Add(ex.ToString()); Environment.ExitCode = 1; }
             File.WriteAllLines(output,results,Encoding.UTF8);
         }
+        static MonitorReading Reading(MonitorConfig c,string text)
+        {
+            MonitorReading reading; string error;
+            if(!MonitorReading.TryRead(c,text,out reading,out error)) throw new Exception(error);
+            return reading;
+        }
+        static void UnchangedAlarmTests()
+        {
+            var c = new MonitorConfig { Rule = 4, UnchangedSeconds = 10, ConfirmCount = 30, IntervalSeconds = 2, CooldownSeconds = 5 };
+            var now = DateTime.UtcNow; var state = new AlarmState();
+            Check(!state.Observe(c,Reading(c,"8.0"),now),"unchanged timer begins at first valid reading");
+            Check(!state.Observe(c,Reading(c,"8.00"),now.AddSeconds(9.999)),"unchanged value does not alert before duration");
+            Check(state.Observe(c,Reading(c,"8"),now.AddSeconds(10)),"equal numeric formats alert at duration without extra confirmation hits");
+            Check(!state.Observe(c,Reading(c,"8"),now.AddSeconds(20)),"unchanged one-shot alert is not repeated");
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(21)) && !state.Active && state.UnchangedElapsed == 0,"numeric change rearms and restarts duration");
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(30)) && state.Observe(c,Reading(c,"9"),now.AddSeconds(31)),"changed numeric content must complete its own duration");
+            c.Repeat = true;
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(35)) && state.Observe(c,Reading(c,"9"),now.AddSeconds(36)),"unchanged repeats respect cooldown");
+            state.Invalid();
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(40)) && state.UnchangedElapsed == 0 && !state.Active,"failed capture/parse or pause resets unchanged baseline");
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(49)) && state.Observe(c,Reading(c,"9"),now.AddSeconds(50)),"unchanged resumes only after full valid duration");
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(100)) && state.UnchangedElapsed == 0,"long unobserved gap is not counted as unchanged");
+            Check(!state.Observe(c,Reading(c,"9"),now.AddSeconds(99)) && state.UnchangedElapsed == 0,"backwards time restarts unchanged observation");
+            c.CooldownSeconds = 60; c.Repeat = false; state = new AlarmState();
+            state.Observe(c,Reading(c,"1"),now); state.Observe(c,Reading(c,"1"),now.AddSeconds(10));
+            state.Observe(c,Reading(c,"2"),now.AddSeconds(11));
+            Check(!state.Observe(c,Reading(c,"2"),now.AddSeconds(21)) && state.UnchangedExpired && !state.Active,"new stable content still respects previous alarm cooldown");
+            state.Observe(c,Reading(c,"2"),now.AddSeconds(40)); state.Observe(c,Reading(c,"2"),now.AddSeconds(60));
+            Check(state.Observe(c,Reading(c,"2"),now.AddSeconds(70)),"stable content alerts once cooldown expires");
+            c.Rule = 5; c.CooldownSeconds = 5; state = new AlarmState();
+            Check(!state.Observe(c,Reading(c,"  运行\r\n正常  "),now) && state.Observe(c,Reading(c,"运行 正常"),now.AddSeconds(10)),"text unchanged supports nonnumeric words and normalizes whitespace");
+            Check(!state.Observe(c,Reading(c,"运行 异常"),now.AddSeconds(11)) && !state.UnchangedExpired,"text change restarts unchanged timer");
+            MonitorReading empty; string error;
+            Check(!MonitorReading.TryRead(c," \r\n ",out empty,out error),"blank text is an invalid observation, not stable content");
+            Check(Reading(c,"READY").Identity != Reading(c,"ready").Identity && Reading(c,"正常。").Identity != Reading(c,"正常").Identity,"text comparison preserves case and punctuation");
+            Check(Reading(c,"8.0").Identity != Reading(c,"8.00").Identity,"text mode retains numeric formatting");
+            var a = new AlarmState(); var b = new AlarmState();
+            a.Observe(c,Reading(c,"OK"),now); b.Observe(c,Reading(c,"OK"),now.AddSeconds(5));
+            Check(a.Observe(c,Reading(c,"OK"),now.AddSeconds(10)) && !b.Observe(c,Reading(c,"OK"),now.AddSeconds(10)),"multiple monitors have independent unchanged timers");
+            c.Rule = 4;
+            Check(!MonitorReading.TryRead(c,"状态正常",out empty,out error),"numeric unchanged still rejects missing numbers");
+            Check(Rules.Describe(c).Contains("10 秒"),"unchanged duration is included in alarm condition");
+        }
+        static async Task RunEditorDialog(MainForm main,Func<Editor,Task> scenario,bool allowEarlyClose = false,MonitorConfig config = null)
+        {
+            var completed = new TaskCompletionSource<Exception>();
+            bool returnedEarly;
+            using(var editor = new Editor(main,config ?? new MonitorConfig { Name = "回归监控", Width = 180, Height = 64 }))
+            {
+                editor.StartPosition = FormStartPosition.Manual; editor.Location = new Point(-30000,-30000);
+                editor.Shown += async delegate
+                {
+                    Exception failure = null;
+                    try { await scenario(editor); }
+                    catch(Exception ex) { failure = ex; }
+                    finally
+                    {
+                        completed.TrySetResult(failure);
+                        if(!editor.IsDisposed) editor.Close();
+                    }
+                };
+                // Same ShowDialog + using lifetime as MainForm.Add/Edit, rather than Show().
+                editor.ShowDialog(main);
+                returnedEarly = !completed.Task.IsCompleted;
+            }
+            Exception error = await completed.Task;
+            if(error != null) throw error;
+            if(!allowEarlyClose) Check(!returnedEarly,"modal editor remains alive until screen operation completes");
+        }
+        static void CheckEditorRestored(Editor editor,MainForm main,string name)
+        {
+            Check(!editor.IsDisposed && editor.Modal && editor.Visible && editor.Enabled && editor.Opacity == 1 && main.Opacity == 1,name);
+        }
+        static Task ModalEditorTest()
+        {
+            var completion = new TaskCompletionSource<bool>();
+            var thread = new Thread(delegate()
+            {
+                try
+                {
+                    using(var main = new MainForm(new AppConfig()))
+                    {
+                        main.StartPosition = FormStartPosition.Manual; main.Location = new Point(-30000,-30000);
+                        main.Shown += async delegate
+                        {
+                            try
+                            {
+                                await RunEditorDialog(main,async editor =>
+                                {
+                                    for(int i=0;i<2;i++)
+                                    {
+                                        await editor.Preview(() => new Bitmap(180,64),async (bitmap,invert) =>
+                                        {
+                                            await Task.Delay(40);
+                                            Check(editor.Modal && editor.Visible && !editor.IsDisposed && editor.Opacity == 0 && main.Opacity == 0,"preview uncovers screen without ending modal dialog");
+                                            await editor.Preview(() => { throw new Exception("reentrant preview must not capture"); },(b,v) => Task.FromResult("0"));
+                                            return "8.97";
+                                        });
+                                        CheckEditorRestored(editor,main,"successful/repeated preview restores editor");
+                                        Check(FindControl(editor,"当前数值：8.97   ·   正常\n原文：8.97") != null,"preview displays parsed decimal result");
+                                    }
+                                    ((Button)FindControl(editor,"保存监控")).PerformClick();
+                                    Check(editor.DialogResult == DialogResult.OK && editor.Result.Width == 180,"monitor can be saved after preview");
+                                });
+                                await RunEditorDialog(main,async editor =>
+                                {
+                                    await editor.Preview(() => { throw new InvalidOperationException("模拟截图失败"); },(b,v) => Task.FromResult("0"));
+                                    CheckEditorRestored(editor,main,"capture failure restores modal editor");
+                                    Check(FindControl(editor,"模拟截图失败") != null,"capture error shown inside editor");
+                                    await editor.Preview(() => new Bitmap(180,64),async (b,v) => { await Task.Delay(40); throw new InvalidOperationException("模拟 OCR 失败"); });
+                                    CheckEditorRestored(editor,main,"asynchronous OCR failure restores modal editor");
+                                    Check(FindControl(editor,"模拟 OCR 失败") != null,"OCR error shown inside editor");
+                                    await editor.Preview(() => new Bitmap(180,64),(b,v) => Task.FromResult("8.97"));
+                                    CheckEditorRestored(editor,main,"preview can be retried after failure");
+                                });
+                                await RunEditorDialog(main,async editor =>
+                                {
+                                    var original = editor.Result.Region;
+                                    await editor.SelectRegion(() => null,c => { throw new Exception("unexpected bind"); });
+                                    CheckEditorRestored(editor,main,"cancelling reselection restores modal editor");
+                                    Check(editor.Result.Region == original,"cancelling reselection keeps previous region");
+                                    ((CheckBox)FindControl(editor,"跟随所在窗口移动（关闭后需重新框选）")).Checked = false;
+                                    var selected = new Rectangle(30,40,200,80);
+                                    await editor.SelectRegion(() => selected,c => { throw new Exception("unexpected bind"); });
+                                    CheckEditorRestored(editor,main,"successful reselection restores modal editor");
+                                    Check(editor.Result.Region == selected,"successful reselection updates region");
+                                    await editor.Preview(() => new Bitmap(200,80),(b,v) => Task.FromResult("8.97"));
+                                    CheckEditorRestored(editor,main,"preview works after reselection");
+                                });
+                                await RunEditorDialog(main,async editor =>
+                                {
+                                    var ruleChoice = (ComboBox)FindControl(editor,"大于上限");
+                                    ruleChoice.SelectedIndex = 5;
+                                    var seconds = (NumericUpDown)editor.Controls.Find("UnchangedSeconds",true)[0]; seconds.Value = 17;
+                                    Check(seconds.Enabled,"unchanged duration enabled for text rule");
+                                    await editor.Preview(() => new Bitmap(180,64),(b,v) => Task.FromResult("运行正常"));
+                                    CheckEditorRestored(editor,main,"text preview preserves modal editor");
+                                    Check(FindControl(editor,"当前文字：运行正常   ·   开始监控后计时：文字不变 ≥ 17 秒\n原文：运行正常") != null,"text preview works without numbers and does not claim duration already met");
+                                    ((Button)FindControl(editor,"保存监控")).PerformClick();
+                                    Check(editor.DialogResult == DialogResult.OK && editor.Result.Rule == 5 && editor.Result.UnchangedSeconds == 17,"text unchanged rule saves despite unused inverted thresholds");
+                                },false,new MonitorConfig { Name = "文字监控", Width = 180, Height = 64, Lower = 100, Upper = 0 });
+                                foreach(bool fail in new[]{false,true})
+                                {
+                                    await RunEditorDialog(main,async editor =>
+                                    {
+                                        await editor.Preview(() => new Bitmap(180,64),async (b,v) =>
+                                        {
+                                            editor.Dispose();
+                                            await Task.Delay(40);
+                                            if(fail) throw new InvalidOperationException("late OCR failure");
+                                            return "8.97";
+                                        });
+                                        Check(editor.IsDisposed && main.Opacity == 1,"late OCR completion/failure does not revive disposed editor");
+                                    },true);
+                                }
+                                completion.TrySetResult(true);
+                            }
+                            catch(Exception ex) { completion.TrySetException(ex); }
+                            finally { main.Close(); }
+                        };
+                        Application.Run(main);
+                    }
+                }
+                catch(Exception ex) { completion.TrySetException(ex); }
+            });
+            thread.SetApartmentState(ApartmentState.STA); thread.Start(); return completion.Task;
+        }
         static Task LiveCaptureTest()
         {
             var completion = new TaskCompletionSource<bool>();
             var thread = new Thread(delegate()
             {
-                using(var fixture = new System.Windows.Forms.Form { Text = "屏幕监控自动验证", BackColor = Color.White, ClientSize = new Size(400,160), StartPosition = System.Windows.Forms.FormStartPosition.Manual, Location = new Point(50,80), TopMost = true })
+                using(var fixture = new System.Windows.Forms.Form { Text = "屏幕监控自动验证", BackColor = Color.White, ClientSize = new Size(400,160), StartPosition = System.Windows.Forms.FormStartPosition.Manual, TopMost = true })
                 {
-                    fixture.Paint += delegate(object sender,System.Windows.Forms.PaintEventArgs e) { using(var font = new Font("Arial",36)) e.Graphics.DrawString("123.45",font,Brushes.Black,20,20); };
+                    // Keep the fixture away from screen-edge overlays and use physical monitor coordinates.
+                    var testScreen = Screen.AllScreens[0];
+                    foreach(var candidate in Screen.AllScreens) if(candidate.Bounds.Left < testScreen.Bounds.Left) testScreen = candidate;
+                    fixture.Location = new Point(testScreen.WorkingArea.Left + (testScreen.WorkingArea.Width-fixture.Width)/2,testScreen.WorkingArea.Top + (testScreen.WorkingArea.Height-fixture.Height)/2);
+                    string fixtureText = "123.45";
+                    fixture.Paint += delegate(object sender,System.Windows.Forms.PaintEventArgs e) { using(var font = new Font("Arial",36)) e.Graphics.DrawString(fixtureText,font,Brushes.Black,20,20); };
                     fixture.Shown += async delegate
                     {
                         try
                         {
                             await Task.Delay(250);
+                            fixture.Show(); fixture.TopMost = false; fixture.TopMost = true; fixture.BringToFront(); fixture.Activate(); fixture.Refresh();
+                            await Task.Delay(200);
                             var rect = fixture.RectangleToScreen(new Rectangle(10,10,330,90));
                             var c = new MonitorConfig { X = rect.X,Y = rect.Y,Width = rect.Width,Height = rect.Height };
                             decimal value; string error;
@@ -184,6 +371,10 @@ namespace ScreenWatch
                             {
                                 using(var screenshot = Native.Capture(Native.Resolve(c)))
                                 {
+                                    screenshot.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"tests","live-capture.png"),ImageFormat.Png);
+                                    Native.RECT diagnosticBounds; Native.GetWindowRect(fixture.Handle,out diagnosticBounds);
+                                    var underPoint = Native.GetAncestor(Native.WindowFromPoint(new Point(rect.Left+rect.Width/2,rect.Top+rect.Height/2)),2);
+                                    Check(underPoint == fixture.Handle,"live test target is visible during capture (region " + rect + ", native window " + diagnosticBounds.Rect + ", visible " + Native.IsWindowVisible(fixture.Handle) + ", opacity " + fixture.Opacity + ", minimized " + Native.IsIconic(fixture.Handle) + ", foreground class " + Native.ClassName(underPoint) + ")");
                                     string text = await new OcrReader().Read(screenshot,false);
                                     Check(Numbers.TryRead(text,0,0,out value,out error) && value == 123.45m,"live screen capture to OCR: " + text);
                                 }
@@ -199,6 +390,47 @@ namespace ScreenWatch
                             }
                             fixture.WindowState = System.Windows.Forms.FormWindowState.Minimized; await Task.Delay(100);
                             bool minimized = false; try { Native.Resolve(c); } catch { minimized = true; } Check(minimized,"minimized target rejected");
+                            fixture.WindowState = FormWindowState.Normal; await Task.Delay(100);
+                            using(var main = new MainForm(new AppConfig()))
+                            {
+                                main.StartPosition = FormStartPosition.Manual; main.Bounds = moved; main.TopMost = true; main.ShowInTaskbar = false;
+                                main.Show(); main.Activate(); await Task.Delay(150);
+                                var center = new Point(moved.Left + moved.Width / 2,moved.Top + moved.Height / 2);
+                                Check(Native.GetAncestor(Native.WindowFromPoint(center),2) == main.Handle,"live preview starts with main window covering target");
+                                await RunEditorDialog(main,async editor =>
+                                {
+                                    // Exercise the production capture/resolve/OCR path with a real owned modal dialog.
+                                    await editor.Preview();
+                                    CheckEditorRestored(editor,main,"live preview restores modal editor after actual capture and OCR");
+                                    Check(FindControl(editor,"当前数值：123.45   ·   满足报警条件\n原文：123.45") != null,"live modal preview uncovers followed target and recognizes 123.45");
+                                },false,c);
+                                main.Close();
+                            }
+                            var stableConfig = new AppConfig();
+                            var numericMonitor = c.Copy(); numericMonitor.Rule = 4; numericMonitor.Name = "数值保持"; numericMonitor.UnchangedSeconds = 1; numericMonitor.IntervalSeconds = 1; numericMonitor.ConfirmCount = 30; numericMonitor.CooldownSeconds = 5;
+                            numericMonitor.Sound = numericMonitor.Bark = numericMonitor.SystemNotification = false;
+                            var textMonitor = numericMonitor.Copy(); textMonitor.Id = Guid.NewGuid().ToString("N"); textMonitor.Rule = 5; textMonitor.Name = "文字保持"; textMonitor.UnchangedSeconds = 2;
+                            stableConfig.Monitors.Add(numericMonitor); stableConfig.Monitors.Add(textMonitor);
+                            using(var main = new MainForm(stableConfig))
+                            {
+                                main.StartPosition = FormStartPosition.Manual; main.Location = new Point(-30000,-30000); main.Show();
+                                var grid = (DataGridView)main.Controls.Find("Monitors",true)[0];
+                                ((Button)FindControl(main,"开始全部")).PerformClick();
+                                var deadline = DateTime.UtcNow.AddSeconds(15);
+                                while(DateTime.UtcNow < deadline && (!Convert.ToString(grid.Rows[0].Cells[3].Value).Contains("已报警") || !Convert.ToString(grid.Rows[1].Cells[3].Value).Contains("已报警"))) await Task.Delay(100);
+                                Check(Convert.ToString(grid.Rows[0].Cells[3].Value).Contains("已报警") && Convert.ToString(grid.Rows[0].Cells[1].Value) == "123.45","live monitoring loop triggers numeric unchanged alarm");
+                                Check(Convert.ToString(grid.Rows[1].Cells[3].Value).Contains("已报警") && !string.IsNullOrWhiteSpace(Convert.ToString(grid.Rows[1].Cells[1].Value)),"live monitoring loop triggers text unchanged alarm independently");
+                                main.Stop();
+                                Check(Convert.ToString(grid.Rows[0].Cells[3].Value) == "已暂停" && Convert.ToString(grid.Rows[1].Cells[3].Value) == "已暂停","unchanged monitors can be paused");
+                                fixtureText = "READY"; fixture.Refresh();
+                                ((Button)FindControl(main,"开始全部")).PerformClick();
+                                deadline = DateTime.UtcNow.AddSeconds(15);
+                                while(DateTime.UtcNow < deadline && !Convert.ToString(grid.Rows[1].Cells[3].Value).Contains("已报警")) await Task.Delay(100);
+                                Check(Convert.ToString(grid.Rows[1].Cells[3].Value).Contains("已报警") && Convert.ToString(grid.Rows[1].Cells[1].Value).Replace(" ","") == "READY","live nonnumeric READY text reaches unchanged alarm after resume");
+                                Check(Convert.ToString(grid.Rows[0].Cells[1].Value) == "—" && !Convert.ToString(grid.Rows[0].Cells[3].Value).Contains("已报警"),"nonnumeric content invalidates numeric unchanged monitor");
+                                main.Stop();
+                                main.Close();
+                            }
                             completion.SetResult(true);
                         }
                         catch(Exception ex) { completion.SetException(ex); }

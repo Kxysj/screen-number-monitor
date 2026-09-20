@@ -1,3 +1,4 @@
+param([string]$ExecutableName = 'ScreenWatch.exe')
 $ErrorActionPreference = 'Stop'
 $sourceDir = Join-Path $PSScriptRoot 'src'
 $outputDir = Join-Path $PSScriptRoot 'dist'
@@ -6,7 +7,7 @@ $runtime = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (!(Test-Path $framework)) { $framework = $runtime }
 New-Item -ItemType Directory -Force $outputDir, (Join-Path $outputDir 'tests') | Out-Null
 $compileArgs = @('/noconfig','/nostdlib+','/nologo','/target:winexe','/platform:x64','/optimize+','/codepage:65001','/nowarn:1701')
-$compileArgs += '/out:' + (Join-Path $outputDir 'ScreenWatch.exe')
+$compileArgs += '/out:' + (Join-Path $outputDir $ExecutableName)
 $compileArgs += '/win32manifest:' + (Join-Path $sourceDir 'app.manifest')
 $compileArgs += '/resource:' + (Join-Path $PSScriptRoot 'assets\alarm.wav') + ',ScreenWatch.alarm.wav'
 foreach ($reference in @('mscorlib','System','System.Core','System.Drawing','System.Windows.Forms','System.Xml','System.Security','System.Net.Http','System.Web.Extensions','Facades\System.Runtime','Facades\System.Threading.Tasks','Facades\System.Runtime.InteropServices.WindowsRuntime')) {
@@ -19,4 +20,5 @@ $compileArgs += Get-ChildItem (Join-Path $sourceDir '*.cs') | ForEach-Object { $
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'assets\alarm.wav'), (Join-Path $PSScriptRoot 'assets\ScreenWatch.exe.config'), (Join-Path $PSScriptRoot 'README.md'), (Join-Path $PSScriptRoot 'examples\demo.html') -Destination $outputDir -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'tests\decimal-regression.png') -Destination (Join-Path $outputDir 'tests') -Force
-Write-Output (Join-Path $outputDir 'ScreenWatch.exe')
+if ($ExecutableName -ne 'ScreenWatch.exe') { Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'assets\ScreenWatch.exe.config') -Destination (Join-Path $outputDir ($ExecutableName + '.config')) -Force }
+Write-Output (Join-Path $outputDir $ExecutableName)
